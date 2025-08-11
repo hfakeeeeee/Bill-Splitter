@@ -12,6 +12,8 @@ Một ứng dụng web hiện đại để tính toán tiền ăn nhóm một c�
 - 💾 **Lưu trữ dữ liệu**: Tự động lưu và khôi phục dữ liệu khi refresh trang
 - ✅ **Kiểm tra tổng tiền**: Tự động kiểm tra và cảnh báo khi tổng tiền không khớp
 - 🗑️ **Xóa dữ liệu**: Nút xóa tất cả dữ liệu để bắt đầu mới
+- 💳 **QR Code chuyển khoản**: Hiển thị QR code để thanh toán
+- ✅ **Đánh dấu đã trả tiền**: Theo dõi ai đã trả tiền rồi
 
 ## Cách sử dụng
 
@@ -25,14 +27,25 @@ Một ứng dụng web hiện đại để tính toán tiền ăn nhóm một c�
 - Nhập tên và giá gốc của món ăn cho từng người
 - Ứng dụng sẽ tự động tính số tiền phải trả
 
-### 3. Kiểm tra tổng tiền
+### 3. Đánh dấu đã trả tiền
+- Nhấn vào icon thẻ tín dụng bên cạnh tên thành viên
+- Icon sẽ chuyển thành dấu tích xanh khi đã trả tiền
+- Thành viên đã trả tiền sẽ có background màu xanh nhạt
+
+### 4. Hiển thị QR Code
+- Khi có người chưa trả tiền, phần QR Code sẽ xuất hiện
+- Chọn ngân hàng từ dropdown menu
+- Nhấn "Hiện QR" để xem mã QR chuyển khoản
+- Nhấn "Ẩn QR" để ẩn đi
+
+### 5. Kiểm tra tổng tiền
 - Ứng dụng sẽ tự động kiểm tra tổng tiền của các thành viên có khớp với tổng tiền đơn không
 - Hiển thị thông báo:
   - ✅ **Xanh**: Tổng tiền khớp chính xác
   - ⚠️ **Vàng**: Tổng tiền gần đúng (sai số nhỏ)
   - ❌ **Đỏ**: Tổng tiền không khớp (cần kiểm tra lại)
 
-### 4. Công thức tính toán
+### 6. Công thức tính toán
 ```
 Phần trăm giảm = (Tiền giảm giá - Tiền ship) / Tổng tiền đơn × 100%
 Tiền phải trả = Giá gốc × (1 - Phần trăm giảm)
@@ -43,6 +56,17 @@ Tiền phải trả = Giá gốc × (1 - Phần trăm giảm)
 - **Tự động lưu**: Dữ liệu được lưu tự động vào localStorage của trình duyệt
 - **Khôi phục**: Khi refresh trang, dữ liệu sẽ được khôi phục tự động
 - **Xóa dữ liệu**: Nhấn nút "Xóa tất cả" để xóa toàn bộ dữ liệu và bắt đầu mới
+
+## Cài đặt QR Codes
+
+1. **Tạo thư mục**: Tạo thư mục `public/qr-codes/` trong dự án
+2. **Thêm QR codes**: Đặt các file QR code với tên:
+   - `momo.png` - QR code MoMo
+   - `vcb.png` - QR code Vietcombank
+   - `tcb.png` - QR code Techcombank
+   - `acb.png` - QR code ACB
+   - `mb.png` - QR code MB Bank
+3. **Định dạng**: Chỉ hỗ trợ file PNG, JPG, JPEG
 
 ## Cài đặt và chạy
 

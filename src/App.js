@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Calculator, Users, Receipt, AlertTriangle, CheckCircle } from 'lucide-react';
+import { Plus, Trash2, Calculator, Users, Receipt, AlertTriangle, CheckCircle, CreditCard, X } from 'lucide-react';
 import './App.css';
 
 function App() {
@@ -10,18 +10,30 @@ function App() {
   });
 
   const [members, setMembers] = useState([
-    { id: 1, name: '', originalPrice: '', finalPrice: '' }
+    { id: 1, name: '', originalPrice: '', finalPrice: '', paid: false }
   ]);
 
   const [discountPercentage, setDiscountPercentage] = useState(0);
   const [validationMessage, setValidationMessage] = useState('');
   const [validationType, setValidationType] = useState(''); // 'success', 'error', 'warning'
   const [isDataLoaded, setIsDataLoaded] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [selectedQR, setSelectedQR] = useState('momo');
+
+  // Danh sách QR codes có sẵn
+  const qrCodes = [
+    { id: 'Dat', name: 'Dat', file: 'Dat.png' },
+    { id: 'Huy', name: 'Huy', file: 'Huy.png' },
+    { id: 'Nguyen', name: 'Nguyen', file: 'Nguyen.png' },
+    { id: 'Quang', name: 'Quang', file: 'Quang.png' },
+    { id: 'Thu', name: 'Thu', file: 'Thu.png' }
+  ];
 
   // Load data from localStorage on component mount
   useEffect(() => {
     const savedBillData = localStorage.getItem('billSplitter_billData');
     const savedMembers = localStorage.getItem('billSplitter_members');
+    const savedQR = localStorage.getItem('billSplitter_selectedQR');
     
     if (savedBillData) {
       try {
@@ -37,6 +49,10 @@ function App() {
       } catch (error) {
         console.error('Error loading members data:', error);
       }
+    }
+
+    if (savedQR) {
+      setSelectedQR(savedQR);
     }
     
     setIsDataLoaded(true);
@@ -54,6 +70,12 @@ function App() {
       localStorage.setItem('billSplitter_members', JSON.stringify(members));
     }
   }, [members, isDataLoaded]);
+
+  useEffect(() => {
+    if (isDataLoaded) {
+      localStorage.setItem('billSplitter_selectedQR', selectedQR);
+    }
+  }, [selectedQR, isDataLoaded]);
 
   // Tính toán phần trăm giảm giá
   useEffect(() => {
@@ -130,7 +152,7 @@ function App() {
 
   const addMember = () => {
     const newId = Math.max(...members.map(m => m.id)) + 1;
-    setMembers(prev => [...prev, { id: newId, name: '', originalPrice: '', finalPrice: '' }]);
+    setMembers(prev => [...prev, { id: newId, name: '', originalPrice: '', finalPrice: '', paid: false }]);
   };
 
   const removeMember = (id) => {
@@ -154,12 +176,19 @@ function App() {
     }));
   };
 
+  const togglePaid = (id) => {
+    setMembers(prev => prev.map(member => 
+      member.id === id ? { ...member, paid: !member.paid } : member
+    ));
+  };
+
   const clearAllData = () => {
     if (window.confirm('Bạn có chắc muốn xóa tất cả dữ liệu?')) {
       setBillData({ totalAmount: '', discount: '', shipping: '' });
-      setMembers([{ id: 1, name: '', originalPrice: '', finalPrice: '' }]);
+      setMembers([{ id: 1, name: '', originalPrice: '', finalPrice: '', paid: false }]);
       localStorage.removeItem('billSplitter_billData');
       localStorage.removeItem('billSplitter_members');
+      localStorage.removeItem('billSplitter_selectedQR');
       setValidationMessage('');
       setValidationType('');
       setIsDataLoaded(false);
@@ -169,6 +198,8 @@ function App() {
 
   const totalOriginalPrice = members.reduce((sum, member) => sum + (parseFloat(member.originalPrice) || 0), 0);
   const totalFinalPrice = members.reduce((sum, member) => sum + (parseFloat(member.finalPrice) || 0), 0);
+  const totalPaid = members.reduce((sum, member) => sum + (member.paid ? parseFloat(member.finalPrice) || 0 : 0), 0);
+  const totalUnpaid = totalFinalPrice - totalPaid;
 
   return (
     <div className="app">
@@ -254,16 +285,25 @@ function App() {
             
             <div className="members-list">
               {members.map((member, index) => (
-                <div key={member.id} className="member-item">
+                <div key={member.id} className={`member-item ${member.paid ? 'paid' : ''}`}>
                   <div className="member-header">
                     <span className="member-number">#{index + 1}</span>
-                    <button 
-                      className="remove-button"
-                      onClick={() => removeMember(member.id)}
-                      disabled={members.length === 1}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    <div className="member-actions">
+                      <button 
+                        className={`paid-button ${member.paid ? 'paid' : ''}`}
+                        onClick={() => togglePaid(member.id)}
+                        title={member.paid ? 'Đã trả tiền' : 'Chưa trả tiền'}
+                      >
+                        {member.paid ? <CheckCircle size={16} /> : <CreditCard size={16} />}
+                      </button>
+                      <button 
+                        className="remove-button"
+                        onClick={() => removeMember(member.id)}
+                        disabled={members.length === 1}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
                   </div>
                   <div className="member-form">
                     <div className="form-group">
@@ -305,11 +345,62 @@ function App() {
                 <span>Tổng tiền phải trả:</span>
                 <strong>{totalFinalPrice.toLocaleString()} VNĐ</strong>
               </div>
+              <div className="summary-item">
+                <span>Đã trả:</span>
+                <strong className="paid">{totalPaid.toLocaleString()} VNĐ</strong>
+              </div>
+              <div className="summary-item">
+                <span>Chưa trả:</span>
+                <strong className="unpaid">{totalUnpaid.toLocaleString()} VNĐ</strong>
+              </div>
               <div className="summary-item total">
                 <span>Tiết kiệm được:</span>
                 <strong>{(totalOriginalPrice - totalFinalPrice).toLocaleString()} VNĐ</strong>
               </div>
             </div>
+
+            {/* QR Code Section */}
+            {totalUnpaid > 0 && (
+              <div className="qr-section">
+                <div className="qr-header">
+                  <h3>Chuyển khoản</h3>
+                  <div className="qr-selector">
+                    <select 
+                      value={selectedQR} 
+                      onChange={(e) => setSelectedQR(e.target.value)}
+                    >
+                      {qrCodes.map(qr => (
+                        <option key={qr.id} value={qr.id}>{qr.name}</option>
+                      ))}
+                    </select>
+                    <button 
+                      className="qr-toggle-button"
+                      onClick={() => setShowQR(!showQR)}
+                    >
+                      {showQR ? <X size={20} /> : <CreditCard size={20} />}
+                      {showQR ? 'Ẩn QR' : 'Hiện QR'}
+                    </button>
+                  </div>
+                </div>
+                {showQR && (
+                  <div className="qr-display">
+                    <img 
+                      src={`/qr-codes/${qrCodes.find(qr => qr.id === selectedQR)?.file}`} 
+                      alt={`QR Code ${qrCodes.find(qr => qr.id === selectedQR)?.name}`}
+                      onError={(e) => {
+                        e.target.style.display = 'none';
+                        e.target.nextSibling.style.display = 'block';
+                      }}
+                    />
+                    <div className="qr-placeholder" style={{display: 'none'}}>
+                      <CreditCard size={48} />
+                      <p>Chưa có QR code cho {qrCodes.find(qr => qr.id === selectedQR)?.name}</p>
+                      <p>Thêm file vào thư mục /public/qr-codes/</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
