@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Trash2, Calculator, Users, Receipt, AlertTriangle, CheckCircle,
-  CreditCard, X, Filter, Copy, Shuffle, Gauge, ListChecks, Upload, Edit2
+  CreditCard, Filter, Copy, Shuffle, Gauge, ListChecks, Upload, Edit2
 } from "lucide-react";
 import "./App.css";
 
