@@ -1,13 +1,13 @@
 {
   "files": {
-    "main.css": "/Bill-Splitter/static/css/main.b5fe9ab3.css",
-    "main.js": "/Bill-Splitter/static/js/main.a6ddb6e2.js",
+    "main.css": "/Bill-Splitter/static/css/main.9eb3e519.css",
+    "main.js": "/Bill-Splitter/static/js/main.1dce82f8.js",
     "index.html": "/Bill-Splitter/index.html",
-    "main.b5fe9ab3.css.map": "/Bill-Splitter/static/css/main.b5fe9ab3.css.map",
-    "main.a6ddb6e2.js.map": "/Bill-Splitter/static/js/main.a6ddb6e2.js.map"
+    "main.9eb3e519.css.map": "/Bill-Splitter/static/css/main.9eb3e519.css.map",
+    "main.1dce82f8.js.map": "/Bill-Splitter/static/js/main.1dce82f8.js.map"
   },
   "entrypoints": [
-    "static/css/main.b5fe9ab3.css",
-    "static/js/main.a6ddb6e2.js"
+    "static/css/main.9eb3e519.css",
+    "static/js/main.1dce82f8.js"
   ]
 }
