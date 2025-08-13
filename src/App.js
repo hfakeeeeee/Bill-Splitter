@@ -1,25 +1,50 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Plus, Trash2, Calculator, Users, Receipt, AlertTriangle, CheckCircle,
-  CreditCard, Filter, Copy, Shuffle, Gauge, ListChecks, Upload, Edit2
+  Plus,
+  Trash2,
+  Calculator,
+  Users,
+  Receipt,
+  AlertTriangle,
+  CheckCircle,
+  CreditCard,
+  Filter,
+  Copy,
+  Shuffle,
+  Gauge,
+  ListChecks,
+  Upload,
+  Edit2,
 } from "lucide-react";
 import "./App.css";
 
-/* ====== Storage keys ====== */
+/* ================= Firebase ================= */
+import { db, auth } from "./firebase";
+import {
+  addDoc,
+  collection,
+  doc,
+  onSnapshot,
+  updateDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { onAuthStateChanged } from "firebase/auth";
+
+/* ================= Storage keys ================= */
 const STORAGE_SHEETS = "billSplitter_sheets_v1";
 const STORAGE_ACTIVE = "billSplitter_activeSheet_v1";
 const STORAGE_CUSTOM_QR = "billSplitter_customQR_v1";
 
-/* ====== Built-in QR (từ /public/qr-codes/) ====== */
+/* ================= Built-in QR (ảnh trong /public/qr-codes/) ================= */
 const builtinQRCodes = [
-  { id: "Dat", name: "Dat", src: "/qr-codes/Dat.png", builtin: true },
-  { id: "Huy", name: "Huy", src: "/qr-codes/Huy.png", builtin: true },
-  { id: "Nguyen", name: "Nguyen", src: "/qr-codes/Nguyen.png", builtin: true },
-  { id: "Quang", name: "Quang", src: "/qr-codes/Quang.png", builtin: true },
-  { id: "Thu", name: "Thu", src: "/qr-codes/Thu.png", builtin: true },
+  { id: "Dat", name: "Dat", file: "Dat.png", builtin: true },
+  { id: "Huy", name: "Huy", file: "Huy.png", builtin: true },
+  { id: "Nguyen", name: "Nguyen", file: "Nguyen.png", builtin: true },
+  { id: "Quang", name: "Quang", file: "Quang.png", builtin: true },
+  { id: "Thu", name: "Thu", file: "Thu.png", builtin: true },
 ];
 
-/* ====== Defaults ====== */
+/* ================= Defaults ================= */
 const defaultSheetState = (name = "Sheet 1") => ({
   name,
   billData: { totalAmount: "", discount: "", shipping: "" },
@@ -28,28 +53,46 @@ const defaultSheetState = (name = "Sheet 1") => ({
   payerMemberId: null,
   showUnpaidOnly: false,
   rightTab: "overview",
+  cloudId: null, // Firestore doc id nếu đã bật đồng bộ
 });
 
-/* ====== App ====== */
+const genId = () => "s" + Math.random().toString(36).slice(2, 9);
+
 export default function App() {
   /* ---------- Global: sheets & custom QR ---------- */
-  const [sheetsMap, setSheetsMap] = useState({});  // {sheetId: SheetState}
+  const [sheetsMap, setSheetsMap] = useState({}); // {sheetId: SheetState}
   const [activeSheetId, setActiveSheetId] = useState("");
-  const [customQRs, setCustomQRs] = useState([]);
-  const allQRCodes = useMemo(() => [...builtinQRCodes, ...customQRs], [customQRs]);
+  const [customQRs, setCustomQRs] = useState([]); // [{id,name,src,builtin:false}]
+  const allQRCodes = useMemo(
+    () => [...builtinQRCodes, ...customQRs],
+    [customQRs]
+  );
 
-  /* ---------- Per-sheet local states (bind theo active sheet) ---------- */
+  /* ---------- Per-sheet states (bind theo sheet đang active) ---------- */
   const [billData, setBillData] = useState(defaultSheetState().billData);
   const [members, setMembers] = useState(defaultSheetState().members);
   const [selectedQR, setSelectedQR] = useState(defaultSheetState().selectedQR);
-  const [payerMemberId, setPayerMemberId] = useState(defaultSheetState().payerMemberId);
-  const [showUnpaidOnly, setShowUnpaidOnly] = useState(defaultSheetState().showUnpaidOnly);
+  const [payerMemberId, setPayerMemberId] = useState(
+    defaultSheetState().payerMemberId
+  );
+  const [showUnpaidOnly, setShowUnpaidOnly] = useState(
+    defaultSheetState().showUnpaidOnly
+  );
   const [rightTab, setRightTab] = useState(defaultSheetState().rightTab);
 
   const [discountPercentage, setDiscountPercentage] = useState(0);
   const [validationMessage, setValidationMessage] = useState("");
   const [validationType, setValidationType] = useState(""); // success|warning|error
   const [isLoaded, setIsLoaded] = useState(false);
+
+  /* ---------- Firebase auth (ẩn danh) ---------- */
+  const [uid, setUid] = useState(null);
+  useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid || null)), []);
+
+  /* ---------- Realtime cloud sync state ---------- */
+  const [cloudUnsub, setCloudUnsub] = useState(null); // hàm hủy subscribe
+  const [canWrite, setCanWrite] = useState(false); // có quyền cập nhật doc không
+  const lastPushedRef = useRef(""); // tránh vòng lặp phản xạ
 
   /* ---------- Pagination (auto-fit, no page scroll) ---------- */
   const listRef = useRef(null);
@@ -58,37 +101,106 @@ export default function App() {
   const [page, setPage] = useState(1);
 
   // Layout constants (đồng bộ với CSS)
-  const MIN_CARD_W = 260;  // px
-  const CARD_H = 200;      // px  *** theo yêu cầu
-  const GAP = 12;          // px
+  const MIN_CARD_W = 260; // px
+  const CARD_H = 200; // px (theo yêu cầu)
+  const GAP = 12; // px
 
-  /* ---------- Load from localStorage ---------- */
+  /* ---------- Initial load ---------- */
   useEffect(() => {
     try {
+      // 1) Nạp QR custom
+      const rawQR = localStorage.getItem(STORAGE_CUSTOM_QR);
+      const custom = rawQR ? JSON.parse(rawQR) : [];
+      setCustomQRs(custom || []);
+
+      // 2) Nếu URL có ?cloud=... -> mở live view ngay (không ghi "(live)" vào dữ liệu)
+      const params = new URLSearchParams(window.location.search);
+      const cloudParam = params.get("cloud");
+      if (cloudParam) {
+        const unsub = onSnapshot(doc(db, "sheets", cloudParam), (snap) => {
+          if (!snap.exists()) return;
+          const d = snap.data();
+          setCanWrite(d.owner === uid);
+          const s = d.data || {};
+          const viewId = "cloudView";
+          setSheetsMap({
+            [viewId]: {
+              name: d.name || "Live",
+              billData: s.billData || {},
+              members: (s.members || []).map((m) => ({
+                ...m,
+                finalPrice: Number(m.finalPrice) || 0,
+              })),
+              selectedQR: s.selectedQR,
+              payerMemberId: s.payerMemberId ?? null,
+              showUnpaidOnly: !!s.showUnpaidOnly,
+              rightTab: s.rightTab || "overview",
+              cloudId: cloudParam,
+            },
+          });
+          setActiveSheetId(viewId);
+          setBillData(s.billData || {});
+          setMembers(
+            (s.members || []).map((m) => ({
+              ...m,
+              finalPrice: Number(m.finalPrice) || 0,
+            }))
+          );
+          setSelectedQR(s.selectedQR);
+          setPayerMemberId(s.payerMemberId ?? null);
+          setShowUnpaidOnly(!!s.showUnpaidOnly);
+          setRightTab(s.rightTab || "overview");
+          setPage(1);
+        });
+        setCloudUnsub(() => unsub);
+        setIsLoaded(true);
+        return () => unsub();
+      }
+
+      // 3) Nạp từ localStorage
       const rawSheets = localStorage.getItem(STORAGE_SHEETS);
       const rawActive = localStorage.getItem(STORAGE_ACTIVE);
-      const rawQR = localStorage.getItem(STORAGE_CUSTOM_QR);
-
-      if (rawQR) setCustomQRs(JSON.parse(rawQR) || []);
-
       if (rawSheets) {
         const parsed = JSON.parse(rawSheets) || {};
-        // đảm bảo dữ liệu member.finalPrice là number
+        // sanitize members
         Object.values(parsed).forEach((s) => {
-          s.members = (s.members || []).map((m) => ({ ...m, finalPrice: Number(m.finalPrice) || 0 }));
+          s.members = (s.members || []).map((m) => ({
+            ...m,
+            finalPrice: Number(m.finalPrice) || 0,
+          }));
         });
         setSheetsMap(parsed);
-        const aid = rawActive && parsed[rawActive] ? rawActive : Object.keys(parsed)[0];
+        const aid =
+          rawActive && parsed[rawActive] ? rawActive : Object.keys(parsed)[0];
         if (aid) {
           setActiveSheetId(aid);
-          loadSheetToLocalStates(parsed[aid], true);
+          const s = parsed[aid];
+          const exists = [...builtinQRCodes, ...custom].some(
+            (q) => q.id === s.selectedQR
+          );
+          setBillData(s.billData || defaultSheetState().billData);
+          setMembers(
+            (s.members || defaultSheetState().members).map((m) => ({
+              ...m,
+              finalPrice: Number(m.finalPrice) || 0,
+            }))
+          );
+          setSelectedQR(exists ? s.selectedQR : builtinQRCodes[0].id);
+          setPayerMemberId(s.payerMemberId ?? null);
+          setShowUnpaidOnly(!!s.showUnpaidOnly);
+          setRightTab(s.rightTab || "overview");
         } else {
-          // không có sheet -> tạo mới
           const id = genId();
           const init = { [id]: defaultSheetState("Sheet 1") };
           setSheetsMap(init);
           setActiveSheetId(id);
-          loadSheetToLocalStates(init[id], true);
+          const s = init[id];
+          setBillData(s.billData);
+          setMembers(s.members);
+          setSelectedQR(s.selectedQR);
+          setPayerMemberId(s.payerMemberId);
+          setShowUnpaidOnly(s.showUnpaidOnly);
+          setRightTab(s.rightTab);
           localStorage.setItem(STORAGE_SHEETS, JSON.stringify(init));
           localStorage.setItem(STORAGE_ACTIVE, id);
         }
@@ -97,7 +209,13 @@ export default function App() {
         const init = { [id]: defaultSheetState("Sheet 1") };
         setSheetsMap(init);
         setActiveSheetId(id);
-        loadSheetToLocalStates(init[id], true);
+        const s = init[id];
+        setBillData(s.billData);
+        setMembers(s.members);
+        setSelectedQR(s.selectedQR);
+        setPayerMemberId(s.payerMemberId);
+        setShowUnpaidOnly(s.showUnpaidOnly);
+        setRightTab(s.rightTab);
         localStorage.setItem(STORAGE_SHEETS, JSON.stringify(init));
         localStorage.setItem(STORAGE_ACTIVE, id);
       }
@@ -106,24 +224,10 @@ export default function App() {
     } finally {
       setIsLoaded(true);
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid]);
 
-  const genId = () => "s" + Math.random().toString(36).slice(2, 9);
-
-  const loadSheetToLocalStates = (sheet, firstLoad = false) => {
-    const s = sheet || defaultSheetState();
-    setBillData(s.billData || defaultSheetState().billData);
-    setMembers((s.members || defaultSheetState().members).map((m) => ({ ...m, finalPrice: Number(m.finalPrice) || 0 })));
-    const exists = allQRCodes.some((q) => q.id === s.selectedQR);
-    setSelectedQR(exists ? s.selectedQR : builtinQRCodes[0].id);
-    setPayerMemberId(s.payerMemberId ?? null);
-    setShowUnpaidOnly(!!s.showUnpaidOnly);
-    setRightTab(s.rightTab || "overview");
-    setPage(1);
-    if (!firstLoad) localStorage.setItem(STORAGE_ACTIVE, activeSheetId);
-  };
-
-  /* ---------- Persist per-sheet changes ---------- */
+  /* ---------- Persist changes per sheet ---------- */
   useEffect(() => {
     if (!isLoaded || !activeSheetId) return;
     setSheetsMap((prev) => {
@@ -137,13 +241,24 @@ export default function App() {
           payerMemberId,
           showUnpaidOnly,
           rightTab,
+          name: prev[activeSheetId]?.name || "Sheet",
+          cloudId: prev[activeSheetId]?.cloudId || null,
         },
       };
       localStorage.setItem(STORAGE_SHEETS, JSON.stringify(next));
       localStorage.setItem(STORAGE_ACTIVE, activeSheetId);
       return next;
     });
-  }, [billData, members, selectedQR, payerMemberId, showUnpaidOnly, rightTab, activeSheetId, isLoaded]);
+  }, [
+    billData,
+    members,
+    selectedQR,
+    payerMemberId,
+    showUnpaidOnly,
+    rightTab,
+    activeSheetId,
+    isLoaded,
+  ]);
 
   /* ---------- Persist custom QR ---------- */
   useEffect(() => {
@@ -152,8 +267,31 @@ export default function App() {
   }, [customQRs, isLoaded]);
 
   /* ---------- Sheet actions ---------- */
+  const switchSheet = (id) => {
+    if (!id || !sheetsMap[id]) return;
+    setActiveSheetId(id);
+    const s = sheetsMap[id];
+    const exists = allQRCodes.some((q) => q.id === s.selectedQR);
+    setBillData(s.billData || defaultSheetState().billData);
+    setMembers(
+      (s.members || defaultSheetState().members).map((m) => ({
+        ...m,
+        finalPrice: Number(m.finalPrice) || 0,
+      }))
+    );
+    setSelectedQR(exists ? s.selectedQR : builtinQRCodes[0].id);
+    setPayerMemberId(s.payerMemberId ?? null);
+    setShowUnpaidOnly(!!s.showUnpaidOnly);
+    setRightTab(s.rightTab || "overview");
+    setPage(1);
+    localStorage.setItem(STORAGE_ACTIVE, id);
+  };
+
   const createSheet = () => {
-    const name = window.prompt("Tên sheet mới:", `Sheet ${Object.keys(sheetsMap).length + 1}`);
+    const name = window.prompt(
+      "Tên sheet mới:",
+      `Sheet ${Object.keys(sheetsMap).length + 1}`
+    );
     if (!name) return;
     const id = genId();
     const newSheet = defaultSheetState(name);
@@ -163,7 +301,14 @@ export default function App() {
       return next;
     });
     setActiveSheetId(id);
-    loadSheetToLocalStates(newSheet);
+    setBillData(newSheet.billData);
+    setMembers(newSheet.members);
+    setSelectedQR(newSheet.selectedQR);
+    setPayerMemberId(newSheet.payerMemberId);
+    setShowUnpaidOnly(newSheet.showUnpaidOnly);
+    setRightTab(newSheet.rightTab);
+    setPage(1);
+    localStorage.setItem(STORAGE_ACTIVE, id);
   };
 
   const renameSheet = () => {
@@ -189,27 +334,42 @@ export default function App() {
       const ids = Object.keys(prev).filter((k) => k !== activeSheetId);
       let nextMap = { ...prev };
       delete nextMap[activeSheetId];
+
       if (ids.length === 0) {
         const id = genId();
         nextMap = { [id]: defaultSheetState("Sheet 1") };
         setActiveSheetId(id);
-        loadSheetToLocalStates(nextMap[id]);
+        const s = nextMap[id];
+        setBillData(s.billData);
+        setMembers(s.members);
+        setSelectedQR(s.selectedQR);
+        setPayerMemberId(s.payerMemberId);
+        setShowUnpaidOnly(s.showUnpaidOnly);
+        setRightTab(s.rightTab);
+        setPage(1);
         localStorage.setItem(STORAGE_ACTIVE, id);
       } else {
         const nextId = ids[0];
         setActiveSheetId(nextId);
-        loadSheetToLocalStates(prev[nextId]);
+        const s = prev[nextId];
+        const exists = allQRCodes.some((q) => q.id === s.selectedQR);
+        setBillData(s.billData);
+        setMembers(
+          (s.members || []).map((m) => ({
+            ...m,
+            finalPrice: Number(m.finalPrice) || 0,
+          }))
+        );
+        setSelectedQR(exists ? s.selectedQR : builtinQRCodes[0].id);
+        setPayerMemberId(s.payerMemberId ?? null);
+        setShowUnpaidOnly(!!s.showUnpaidOnly);
+        setRightTab(s.rightTab || "overview");
+        setPage(1);
         localStorage.setItem(STORAGE_ACTIVE, nextId);
       }
       localStorage.setItem(STORAGE_SHEETS, JSON.stringify(nextMap));
       return nextMap;
     });
-  };
-
-  const switchSheet = (id) => {
-    if (!id || !sheetsMap[id]) return;
-    setActiveSheetId(id);
-    loadSheetToLocalStates(sheetsMap[id]);
   };
 
   /* ---------- Business logic ---------- */
@@ -236,7 +396,10 @@ export default function App() {
   }, [discountPercentage, isLoaded]);
 
   useEffect(() => {
-    const sumOriginal = members.reduce((s, m) => s + (parseFloat(m.originalPrice) || 0), 0);
+    const sumOriginal = members.reduce(
+      (s, m) => s + (parseFloat(m.originalPrice) || 0),
+      0
+    );
     const expected = parseFloat(billData.totalAmount) || 0;
     if (expected > 0 && sumOriginal > 0) {
       const diff = expected - sumOriginal;
@@ -247,12 +410,16 @@ export default function App() {
           setValidationMessage("✅ Tổng tiền khớp chính xác!");
           setValidationType("success");
         } else {
-          setValidationMessage(`⚠️ Tổng tiền gần đúng (sai số: ${abs.toLocaleString()} VNĐ)`);
+          setValidationMessage(
+            `⚠️ Tổng tiền gần đúng (sai số: ${abs.toLocaleString()} VNĐ)`
+          );
           setValidationType("warning");
         }
       } else {
         const label = diff > 0 ? "Thiếu" : "Thừa";
-        setValidationMessage(`❌ Tổng tiền không khớp! ${label}: ${abs.toLocaleString()} VNĐ`);
+        setValidationMessage(
+          `❌ Tổng tiền không khớp! ${label}: ${abs.toLocaleString()} VNĐ`
+        );
         setValidationType("error");
       }
     } else {
@@ -293,11 +460,16 @@ export default function App() {
     [members]
   );
   const totalPaid = useMemo(
-    () => members.reduce((s, m) => s + (m.paid ? (parseFloat(m.finalPrice) || 0) : 0), 0),
+    () =>
+      members.reduce(
+        (s, m) => s + (m.paid ? (parseFloat(m.finalPrice) || 0) : 0),
+        0
+      ),
     [members]
   );
   const totalUnpaid = totalFinalPrice - totalPaid;
-  const paidRatio = totalFinalPrice > 0 ? Math.min(totalPaid / totalFinalPrice, 1) : 0;
+  const paidRatio =
+    totalFinalPrice > 0 ? Math.min(totalPaid / totalFinalPrice, 1) : 0;
 
   const displayedMembers = useMemo(
     () => (showUnpaidOnly ? members.filter((m) => !m.paid) : members),
@@ -312,7 +484,7 @@ export default function App() {
   const start = (page - 1) * pageSize;
   const pageMembers = displayedMembers.slice(start, start + pageSize);
 
-  /* ---------- Member actions ---------- */
+  /* ---------- Member & utility actions ---------- */
   const handleBillDataChange = (field, value) =>
     setBillData((prev) => ({ ...prev, [field]: value }));
 
@@ -357,18 +529,17 @@ export default function App() {
     if (t) setSelectedQR(t.id);
   };
 
+  // Random người nhận (dùng ở nút Random)
   const chooseRandomPayer = () => {
     if (!members.length) return;
-    // nếu muốn chỉ chọn người chưa trả, thay members bằng members.filter(m => !m.paid)
-    const pool = members;
+    const pool = members; // hoặc members.filter(m => !m.paid)
     const pick = pool[Math.floor(Math.random() * pool.length)];
     if (!pick) return;
     setPayerMemberId(pick.id);
     if (pick.name) autoMatchQR(pick.name);
-    setRightTab("transfer"); // đưa UI sang tab chuyển khoản để thấy QR
+    setRightTab("transfer");
   };
 
-  /* ---------- Copy share ---------- */
   const copySummary = async () => {
     const sheetName = sheetsMap[activeSheetId]?.name || "Sheet";
     const lines = [];
@@ -423,7 +594,140 @@ export default function App() {
     if (selectedQR === id) setSelectedQR(builtinQRCodes[0].id);
   };
 
-  /* ---------- UI ---------- */
+  /* ---------- Helpers for QR src (CRA) ---------- */
+  const getQRSrcById = (id) => {
+    const q =
+      allQRCodes.find((x) => x.id === id) ||
+      builtinQRCodes.find((x) => x.id === id);
+    if (!q) return null;
+    if (q.builtin) {
+      // ảnh trong public/qr-codes/<file>
+      return `${process.env.PUBLIC_URL}/qr-codes/${q.file}`;
+    }
+    return q.src; // dataURL khi là custom
+  };
+
+  /* ---------- Cloud sync: start/stop & link ---------- */
+  const makeSheetData = () => ({
+    billData,
+    members,
+    selectedQR,
+    payerMemberId,
+    showUnpaidOnly,
+    rightTab,
+  });
+
+  const startCloudSync = async () => {
+    try {
+      const sheet = sheetsMap[activeSheetId];
+      if (!sheet) return alert("Chưa chọn sheet.");
+      if (!uid) return alert("Đang đăng nhập ẩn danh… thử lại sau vài giây.");
+
+      let cloudId = sheet.cloudId;
+
+      // 1) Nếu chưa có doc -> tạo
+      if (!cloudId) {
+        const docRef = await addDoc(collection(db, "sheets"), {
+          owner: uid,
+          name: sheet.name,
+          data: makeSheetData(),
+          updatedAt: serverTimestamp(),
+        });
+        cloudId = docRef.id;
+        // lưu vào sheet
+        setSheetsMap((prev) => {
+          const next = { ...prev };
+          next[activeSheetId] = { ...next[activeSheetId], cloudId };
+          localStorage.setItem(STORAGE_SHEETS, JSON.stringify(next));
+          return next;
+        });
+      }
+
+      // 2) Subscribe realtime
+      if (cloudUnsub) cloudUnsub();
+      const unsub = onSnapshot(doc(db, "sheets", cloudId), (snap) => {
+        if (!snap.exists()) return;
+        const d = snap.data();
+        setCanWrite(d.owner === uid);
+
+        const incoming = JSON.stringify(d.data || {});
+        if (incoming === lastPushedRef.current) return; // bỏ echo của chính mình
+
+        const s = d.data || {};
+        setBillData(s.billData || {});
+        setMembers(
+          (s.members || []).map((m) => ({
+            ...m,
+            finalPrice: Number(m.finalPrice) || 0,
+          }))
+        );
+        setSelectedQR(s.selectedQR);
+        setPayerMemberId(s.payerMemberId ?? null);
+        setShowUnpaidOnly(!!s.showUnpaidOnly);
+        setRightTab(s.rightTab || "overview");
+      });
+      setCloudUnsub(() => unsub);
+      alert("Đã bật đồng bộ realtime cho sheet này.");
+    } catch (err) {
+      console.error("startCloudSync failed:", err);
+      alert("Không thể bật đồng bộ: " + (err?.message || err));
+    }
+  };
+
+  const stopCloudSync = () => {
+    if (cloudUnsub) {
+      cloudUnsub();
+      setCloudUnsub(null);
+      alert("Đã tắt đồng bộ realtime.");
+    }
+  };
+
+  const copyLiveLink = async () => {
+    const id = sheetsMap[activeSheetId]?.cloudId;
+    if (!id) return alert("Sheet này chưa bật đồng bộ.");
+    const url = `${window.location.origin}${window.location.pathname}?cloud=${id}`;
+    await navigator.clipboard.writeText(url);
+    alert("Đã copy link live ✅");
+  };
+
+  // Push local -> cloud (chỉ khi là owner và không ở cloudView)
+  useEffect(() => {
+    const sheet = sheetsMap[activeSheetId];
+    const cloudId = sheet?.cloudId;
+    if (!cloudId || !canWrite || activeSheetId === "cloudView") return;
+
+    const data = makeSheetData();
+    const payloadStr = JSON.stringify(data);
+
+    const t = setTimeout(async () => {
+      try {
+        lastPushedRef.current = payloadStr;
+        const payload = {
+          data,
+          updatedAt: serverTimestamp(),
+        };
+        // Chỉ cập nhật tên khi không ở chế độ cloudView
+        payload.name = sheet.name;
+        await updateDoc(doc(db, "sheets", cloudId), payload);
+      } catch (e) {
+        console.error(e);
+      }
+    }, 350); // debounce
+
+    return () => clearTimeout(t);
+  }, [
+    billData,
+    members,
+    selectedQR,
+    payerMemberId,
+    showUnpaidOnly,
+    rightTab,
+    activeSheetId,
+    canWrite,
+    sheetsMap,
+  ]);
+
+  /* ================= UI ================= */
   return (
     <div className="app">
       <header className="topbar">
@@ -460,6 +764,15 @@ export default function App() {
           <button className="ghost" onClick={copySummary}>
             <Copy size={16} /> Copy chia sẻ
           </button>
+          <button className="ghost" onClick={startCloudSync}>
+            Bật đồng bộ
+          </button>
+          <button className="ghost" onClick={copyLiveLink}>
+            Link live
+          </button>
+          <button className="danger" onClick={stopCloudSync}>
+            Tắt đồng bộ
+          </button>
         </div>
       </header>
 
@@ -471,7 +784,10 @@ export default function App() {
             <div className="card">
               <div className="card-header">
                 <Calculator className="card-icon" />
-                <h2>Thông tin đơn hàng — {sheetsMap[activeSheetId]?.name || ""}</h2>
+                <h2>
+                  Thông tin đơn hàng — {sheetsMap[activeSheetId]?.name || ""}
+                  {activeSheetId === "cloudView" ? " (live)" : ""}
+                </h2>
               </div>
               <div className="form-grid">
                 <div className="form-group">
@@ -479,7 +795,9 @@ export default function App() {
                   <input
                     type="number"
                     value={billData.totalAmount}
-                    onChange={(e) => handleBillDataChange("totalAmount", e.target.value)}
+                    onChange={(e) =>
+                      handleBillDataChange("totalAmount", e.target.value)
+                    }
                     placeholder="Nhập tổng tiền..."
                   />
                 </div>
@@ -488,7 +806,9 @@ export default function App() {
                   <input
                     type="number"
                     value={billData.discount}
-                    onChange={(e) => handleBillDataChange("discount", e.target.value)}
+                    onChange={(e) =>
+                      handleBillDataChange("discount", e.target.value)
+                    }
                     placeholder="Nhập tiền giảm giá..."
                   />
                 </div>
@@ -497,7 +817,9 @@ export default function App() {
                   <input
                     type="number"
                     value={billData.shipping}
-                    onChange={(e) => handleBillDataChange("shipping", e.target.value)}
+                    onChange={(e) =>
+                      handleBillDataChange("shipping", e.target.value)
+                    }
                     placeholder="Nhập tiền ship..."
                   />
                 </div>
@@ -747,7 +1069,10 @@ export default function App() {
                         <button className="ghost" onClick={chooseRandomPayer}>
                           <Shuffle size={16} /> Random
                         </button>
-                        <button className="primary" onClick={() => setRightTab("transfer")}>
+                        <button
+                          className="primary"
+                          onClick={() => setRightTab("transfer")}
+                        >
                           <ListChecks size={16} /> Hiện QR
                         </button>
                       </div>
@@ -757,21 +1082,21 @@ export default function App() {
                   {/* Khung QR */}
                   <div className="qr-frame">
                     {(() => {
-                      const cur = allQRCodes.find((q) => q.id === selectedQR);
-                      if (!cur)
+                      const src = getQRSrcById(selectedQR);
+                      if (!src) {
                         return (
                           <div className="qr-fallback">
                             <CreditCard size={40} />
                             <p>Chưa chọn QR</p>
                           </div>
                         );
+                      }
                       return (
                         <>
                           <img
-                            src={cur.src}
-                            alt={`QR chuyển khoản ${cur.name}`}
+                            src={src}
+                            alt="QR chuyển khoản"
                             onError={(e) => {
-                              // với file local bị thiếu, fallback
                               e.currentTarget.style.display = "none";
                               e.currentTarget.nextElementSibling.style.display =
                                 "flex";
@@ -838,8 +1163,8 @@ export default function App() {
                   <div className="note">
                     {totalUnpaid > 0 ? (
                       <>
-                        Còn thiếu <strong>{totalUnpaid.toLocaleString()} VNĐ</strong>.
-                        Vui lòng chuyển cho người nhận.
+                        Còn thiếu <strong>{totalUnpaid.toLocaleString()} VNĐ</strong>. Vui lòng
+                        chuyển cho người nhận.
                       </>
                     ) : (
                       <>🎉 Đã thu đủ tiền!</>
