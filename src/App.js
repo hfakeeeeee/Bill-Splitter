@@ -10,25 +10,19 @@ import {
   CreditCard,
   Filter,
   Copy,
-  Shuffle,
   Gauge,
-  ListChecks,
   Upload,
   Edit2,
+  Share2,
+  Wifi,
+  WifiOff,
+  X,
+  Minus,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import "./App.css";
-
-/* ================= Firebase ================= */
-import { db, auth } from "./firebase";
-import {
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  updateDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { onAuthStateChanged } from "firebase/auth";
+import { syncService, getSetupStatus, showSetupGuide } from "./supabase";
 
 /* ================= Storage keys ================= */
 const STORAGE_SHEETS = "billSplitter_sheets_v1";
@@ -53,7 +47,6 @@ const defaultSheetState = (name = "Sheet 1") => ({
   payerMemberId: null,
   showUnpaidOnly: false,
   rightTab: "overview",
-  cloudId: null, // Firestore doc id nếu đã bật đồng bộ
 });
 
 const genId = () => "s" + Math.random().toString(36).slice(2, 9);
@@ -84,26 +77,53 @@ export default function App() {
   const [validationMessage, setValidationMessage] = useState("");
   const [validationType, setValidationType] = useState(""); // success|warning|error
   const [isLoaded, setIsLoaded] = useState(false);
+  const [showQR, setShowQR] = useState(false);
+  const [justSaved, setJustSaved] = useState(false); // Track recent saves to prevent immediate unsaved marking
 
-  /* ---------- Firebase auth (ẩn danh) ---------- */
-  const [uid, setUid] = useState(null);
-  useEffect(() => onAuthStateChanged(auth, (u) => setUid(u?.uid || null)), []);
+  /* ---------- Live sync state ---------- */
+  const [isLiveMode, setIsLiveMode] = useState(false);
+  const [liveId, setLiveId] = useState(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState(Date.now());
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, error
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [notification, setNotification] = useState(null); // {type: 'success'|'error'|'loading', message: '...'}
+  const [isDataLoading, setIsDataLoading] = useState(false);
+  const unsubscribeRef = useRef(null);
 
-  /* ---------- Realtime cloud sync state ---------- */
-  const [cloudUnsub, setCloudUnsub] = useState(null); // hàm hủy subscribe
-  const [canWrite, setCanWrite] = useState(false); // có quyền cập nhật doc không
-  const lastPushedRef = useRef(""); // tránh vòng lặp phản xạ
+  /* ---------- Notification System ---------- */
+  const showNotification = (type, message, duration = 3000) => {
+    setNotification({ type, message });
+    if (duration > 0) {
+      setTimeout(() => setNotification(null), duration);
+    }
+  };
 
-  /* ---------- Pagination (auto-fit, no page scroll) ---------- */
+  const hideNotification = () => setNotification(null);
+
+  /* ---------- Monitor online status ---------- */
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
   const listRef = useRef(null);
   const [cols, setCols] = useState(3);
   const [rows, setRows] = useState(2);
   const [page, setPage] = useState(1);
 
   // Layout constants (đồng bộ với CSS)
-  const MIN_CARD_W = 260; // px
-  const CARD_H = 200; // px (theo yêu cầu)
-  const GAP = 12; // px
+  const MIN_CARD_W = 240; // px (reduced from 260)
+  const CARD_H = 180; // px (reduced from 200)
+  const GAP = 10; // px (reduced from 12)
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -113,51 +133,243 @@ export default function App() {
       const custom = rawQR ? JSON.parse(rawQR) : [];
       setCustomQRs(custom || []);
 
-      // 2) Nếu URL có ?cloud=... -> mở live view ngay (không ghi "(live)" vào dữ liệu)
+      // 1.5) Show setup status for development
+      if (process.env.NODE_ENV === 'development') {
+        const status = getSetupStatus();
+        console.log('🔧 Sync Service Status:', status);
+        if (!status.usingSupabase) {
+          showSetupGuide();
+        }
+      }
+
+      // 2) Check for live shared data in URL
       const params = new URLSearchParams(window.location.search);
-      const cloudParam = params.get("cloud");
-      if (cloudParam) {
-        const unsub = onSnapshot(doc(db, "sheets", cloudParam), (snap) => {
-          if (!snap.exists()) return;
-          const d = snap.data();
-          setCanWrite(d.owner === uid);
-          const s = d.data || {};
-          const viewId = "cloudView";
-          setSheetsMap({
-            [viewId]: {
-              name: d.name || "Live",
-              billData: s.billData || {},
-              members: (s.members || []).map((m) => ({
+      const liveParam = params.get("live");
+      if (liveParam) {
+        // Show loading for shared links
+        setIsDataLoading(true);
+        showNotification('loading', '� Đang tải dữ liệu chia sẻ...', 0);
+        
+        // Try to get data from real-time service first
+        const syncData = localStorage.getItem(`sync_${liveParam}`);
+        const liveData = localStorage.getItem(`live_${liveParam}`);
+        
+        const dataSource = syncData || liveData;
+        if (dataSource) {
+          try {
+            const decoded = JSON.parse(dataSource);
+            const liveViewId = "live_view";
+            const liveSheet = {
+              ...defaultSheetState(decoded.name || "Live Sheet"),
+              billData: decoded.billData || defaultSheetState().billData,
+              members: (decoded.members || []).map((m) => ({
                 ...m,
                 finalPrice: Number(m.finalPrice) || 0,
               })),
-              selectedQR: s.selectedQR,
-              payerMemberId: s.payerMemberId ?? null,
-              showUnpaidOnly: !!s.showUnpaidOnly,
-              rightTab: s.rightTab || "overview",
-              cloudId: cloudParam,
+              selectedQR: decoded.selectedQR || defaultSheetState().selectedQR,
+              payerMemberId: decoded.payerMemberId ?? null,
+              showUnpaidOnly: !!decoded.showUnpaidOnly,
+              rightTab: decoded.rightTab || "overview",
+            };
+            
+            setSheetsMap({ [liveViewId]: liveSheet });
+            setActiveSheetId(liveViewId);
+            setBillData(liveSheet.billData);
+            setMembers(liveSheet.members);
+            setSelectedQR(liveSheet.selectedQR);
+            setPayerMemberId(liveSheet.payerMemberId);
+            setShowUnpaidOnly(liveSheet.showUnpaidOnly);
+            setRightTab(liveSheet.rightTab);
+            setLiveId(liveParam);
+            setIsLiveMode(true);
+            setLastUpdateTime(decoded.lastUpdate || Date.now());
+            
+            // Subscribe to real-time updates
+            const unsubscribe = syncService.subscribe(liveParam, (newData) => {
+              if (newData.timestamp > lastUpdateTime) {
+                setBillData(newData.billData || {});
+                setMembers((newData.members || []).map((m) => ({
+                  ...m,
+                  finalPrice: Number(m.finalPrice) || 0,
+                })));
+                setSelectedQR(newData.selectedQR || builtinQRCodes[0].id);
+                setPayerMemberId(newData.payerMemberId ?? null);
+                setShowUnpaidOnly(!!newData.showUnpaidOnly);
+                setRightTab(newData.rightTab || "overview");
+                setLastUpdateTime(newData.timestamp);
+              }
+            });
+            
+            // Setup cross-tab sync
+            const crossTabUnsub = syncService.setupCrossTabSync(liveParam, (newData) => {
+              if (newData.lastUpdate && newData.lastUpdate > lastUpdateTime) {
+                setBillData(newData.billData || {});
+                setMembers((newData.members || []).map((m) => ({
+                  ...m,
+                  finalPrice: Number(m.finalPrice) || 0,
+                })));
+                setSelectedQR(newData.selectedQR || builtinQRCodes[0].id);
+                setPayerMemberId(newData.payerMemberId ?? null);
+                setShowUnpaidOnly(!!newData.showUnpaidOnly);
+                setRightTab(newData.rightTab || "overview");
+                setLastUpdateTime(newData.lastUpdate);
+              }
+            });
+            
+            unsubscribeRef.current = () => {
+              unsubscribe();
+              crossTabUnsub();
+            };
+            
+            setIsLoaded(true);
+            setIsDataLoading(false);
+            hideNotification();
+            // Show notification that shared sheet can be edited
+            setTimeout(() => {
+              showNotification('success', '✅ Bạn có thể chỉnh sửa sheet được chia sẻ này!', 4000);
+            }, 1000);
+            return;
+          } catch (e) {
+            console.warn("Failed to decode live data:", e);
+          }
+        } else {
+          // No data found - setup collaborative mode
+          const liveViewId = "live_view";
+          const waitingSheet = {
+            ...defaultSheetState("Sheet Live - Cộng tác"),
+            billData: { 
+              totalAmount: "", 
+              discount: "", 
+              shipping: ""
             },
+            members: [{ 
+              id: 1, 
+              name: "", 
+              originalPrice: "", 
+              finalPrice: 0, 
+              paid: false 
+            }],
+          };
+          
+          setSheetsMap({ [liveViewId]: waitingSheet });
+          setActiveSheetId(liveViewId);
+          setBillData(waitingSheet.billData);
+          setMembers(waitingSheet.members);
+          setSelectedQR(waitingSheet.selectedQR);
+          setPayerMemberId(waitingSheet.payerMemberId);
+          setShowUnpaidOnly(waitingSheet.showUnpaidOnly);
+          setRightTab(waitingSheet.rightTab);
+          setLiveId(liveParam);
+          setIsLiveMode(true);
+          
+          // Setup subscription to wait for data
+          const unsubscribe = syncService.subscribe(liveParam, (newData) => {
+            if (newData && (newData.billData || newData.members)) {
+              const liveSheet = {
+                ...defaultSheetState(newData.name || "Live Sheet"),
+                billData: newData.billData || defaultSheetState().billData,
+                members: (newData.members || []).map((m) => ({
+                  ...m,
+                  finalPrice: Number(m.finalPrice) || 0,
+                })),
+                selectedQR: newData.selectedQR || defaultSheetState().selectedQR,
+                payerMemberId: newData.payerMemberId ?? null,
+                showUnpaidOnly: !!newData.showUnpaidOnly,
+                rightTab: newData.rightTab || "overview",
+              };
+              
+              setSheetsMap({ [liveViewId]: liveSheet });
+              setBillData(liveSheet.billData);
+              setMembers(liveSheet.members);
+              setSelectedQR(liveSheet.selectedQR);
+              setPayerMemberId(liveSheet.payerMemberId);
+              setShowUnpaidOnly(liveSheet.showUnpaidOnly);
+              setRightTab(liveSheet.rightTab);
+              setLastUpdateTime(newData.timestamp || Date.now());
+              
+              // Automatically refresh data without notification
+              setIsDataLoading(false);
+              hideNotification();
+            }
           });
-          setActiveSheetId(viewId);
-          setBillData(s.billData || {});
-          setMembers(
-            (s.members || []).map((m) => ({
-              ...m,
-              finalPrice: Number(m.finalPrice) || 0,
-            }))
-          );
-          setSelectedQR(s.selectedQR);
-          setPayerMemberId(s.payerMemberId ?? null);
-          setShowUnpaidOnly(!!s.showUnpaidOnly);
-          setRightTab(s.rightTab || "overview");
-          setPage(1);
-        });
-        setCloudUnsub(() => unsub);
-        setIsLoaded(true);
-        return () => unsub();
+          
+          const crossTabUnsub = syncService.setupCrossTabSync(liveParam, (newData) => {
+            if (newData && newData.lastUpdate && (newData.billData || newData.members)) {
+              const liveSheet = {
+                ...defaultSheetState(newData.name || "Live Sheet"),
+                billData: newData.billData || defaultSheetState().billData,
+                members: (newData.members || []).map((m) => ({
+                  ...m,
+                  finalPrice: Number(m.finalPrice) || 0,
+                })),
+                selectedQR: newData.selectedQR || defaultSheetState().selectedQR,
+                payerMemberId: newData.payerMemberId ?? null,
+                showUnpaidOnly: !!newData.showUnpaidOnly,
+                rightTab: newData.rightTab || "overview",
+              };
+              
+              setSheetsMap({ [liveViewId]: liveSheet });
+              setBillData(liveSheet.billData);
+              setMembers(liveSheet.members);
+              setSelectedQR(liveSheet.selectedQR);
+              setPayerMemberId(liveSheet.payerMemberId);
+              setShowUnpaidOnly(liveSheet.showUnpaidOnly);
+              setRightTab(liveSheet.rightTab);
+              setLastUpdateTime(newData.lastUpdate);
+            }
+          });
+          
+          unsubscribeRef.current = () => {
+            unsubscribe();
+            crossTabUnsub();
+          };
+          
+          setIsLoaded(true);
+          setIsDataLoading(false);
+          hideNotification();
+          // Show notification for collaborative editing
+          setTimeout(() => {
+            showNotification('success', '✅ Bạn có thể bắt đầu nhập dữ liệu và cộng tác!', 4000);
+          }, 1000);
+          return;
+        }
       }
 
-      // 3) Nạp từ localStorage
+      // 3) Check for legacy shared data in URL
+      const sharedData = params.get("data");
+      if (sharedData) {
+        try {
+          const decoded = JSON.parse(atob(sharedData));
+          const sharedId = "shared_" + Date.now();
+          const sharedSheet = {
+            ...defaultSheetState(decoded.name || "Shared Sheet"),
+            billData: decoded.billData || defaultSheetState().billData,
+            members: (decoded.members || []).map((m) => ({
+              ...m,
+              finalPrice: Number(m.finalPrice) || 0,
+            })),
+            selectedQR: decoded.selectedQR || defaultSheetState().selectedQR,
+            payerMemberId: decoded.payerMemberId ?? null,
+            showUnpaidOnly: !!decoded.showUnpaidOnly,
+            rightTab: decoded.rightTab || "overview",
+          };
+          
+          setSheetsMap({ [sharedId]: sharedSheet });
+          setActiveSheetId(sharedId);
+          setBillData(sharedSheet.billData);
+          setMembers(sharedSheet.members);
+          setSelectedQR(sharedSheet.selectedQR);
+          setPayerMemberId(sharedSheet.payerMemberId);
+          setShowUnpaidOnly(sharedSheet.showUnpaidOnly);
+          setRightTab(sharedSheet.rightTab);
+          setIsLoaded(true);
+          return;
+        } catch (e) {
+          console.warn("Failed to decode shared data:", e);
+        }
+      }
+
+      // 4) Nạp từ localStorage
       const rawSheets = localStorage.getItem(STORAGE_SHEETS);
       const rawActive = localStorage.getItem(STORAGE_ACTIVE);
       if (rawSheets) {
@@ -223,13 +435,18 @@ export default function App() {
       console.error("Load error:", e);
     } finally {
       setIsLoaded(true);
+      // Reset unsaved changes after initial load
+      setTimeout(() => {
+        setHasUnsavedChanges(false);
+        setJustSaved(false); // Ensure justSaved is reset
+      }, 200);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid]);
+  }, []);
 
   /* ---------- Persist changes per sheet ---------- */
   useEffect(() => {
-    if (!isLoaded || !activeSheetId) return;
+    if (!isLoaded || !activeSheetId || activeSheetId.startsWith("shared_")) return;
     setSheetsMap((prev) => {
       const next = {
         ...prev,
@@ -242,7 +459,6 @@ export default function App() {
           showUnpaidOnly,
           rightTab,
           name: prev[activeSheetId]?.name || "Sheet",
-          cloudId: prev[activeSheetId]?.cloudId || null,
         },
       };
       localStorage.setItem(STORAGE_SHEETS, JSON.stringify(next));
@@ -259,6 +475,92 @@ export default function App() {
     activeSheetId,
     isLoaded,
   ]);
+
+  /* ---------- Live sync: update shared data when changes occur ---------- */
+  /* AUTO-SYNC DISABLED - Now using manual Save button
+  useEffect(() => {
+    if (!isLoaded || !isLiveMode || !liveId || activeSheetId === "live_view") return;
+    
+    const updateTime = Date.now();
+    if (updateTime - lastUpdateTime < 1000) return; // Debounce updates
+    
+    const sheet = sheetsMap[activeSheetId];
+    if (!sheet) return;
+
+    const liveData = {
+      name: sheet.name,
+      billData,
+      members,
+      selectedQR,
+      payerMemberId,
+      showUnpaidOnly,
+      rightTab,
+      liveId,
+      lastUpdate: updateTime,
+    };
+
+    setSyncStatus('syncing');
+    
+    try {
+      // Publish to real-time sync service
+      syncService.publish(liveId, liveData);
+      setLastUpdateTime(updateTime);
+      setSyncStatus('idle');
+    } catch (error) {
+      console.error('Sync failed:', error);
+      setSyncStatus('error');
+      // Fallback to localStorage
+      localStorage.setItem(`live_${liveId}`, JSON.stringify(liveData));
+    }
+  }, [
+    billData,
+    members,
+    selectedQR,
+    payerMemberId,
+    showUnpaidOnly,
+    rightTab,
+    isLoaded,
+    isLiveMode,
+    liveId,
+    activeSheetId,
+    sheetsMap,
+    lastUpdateTime,
+  ]);
+  */
+
+  /* ---------- Track unsaved changes ---------- */
+  useEffect(() => {
+    if (!isLoaded || !isLiveMode || justSaved) return;
+    
+    // Allow changes tracking for live_view mode too (enable editing for shared sheet recipients)
+    // Mark as unsaved for changes in live mode
+    const timeoutId = setTimeout(() => {
+      setHasUnsavedChanges(true);
+    }, 100);
+    
+    return () => clearTimeout(timeoutId);
+  }, [billData, members, selectedQR, payerMemberId, showUnpaidOnly, rightTab, isLoaded, isLiveMode, justSaved]);
+
+  /* ---------- Reset justSaved when new changes are detected ---------- */
+  useEffect(() => {
+    if (justSaved && (hasUnsavedChanges || isLoaded)) {
+      // If we detect the user is making new changes, allow unsaved tracking again
+      const resetTimer = setTimeout(() => {
+        setJustSaved(false);
+      }, 2000);
+      
+      return () => clearTimeout(resetTimer);
+    }
+  }, [billData, members, selectedQR, payerMemberId, showUnpaidOnly, rightTab, justSaved, hasUnsavedChanges, isLoaded]);
+
+  /* ---------- Cleanup on unmount ---------- */
+  useEffect(() => {
+    return () => {
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+      }
+    };
+  }, []);
 
   /* ---------- Persist custom QR ---------- */
   useEffect(() => {
@@ -311,11 +613,13 @@ export default function App() {
     localStorage.setItem(STORAGE_ACTIVE, id);
   };
 
-  const renameSheet = () => {
+  const renameSheet = async () => {
     if (!activeSheetId) return;
     const current = sheetsMap[activeSheetId];
     const name = window.prompt("Đổi tên sheet:", current?.name || "");
     if (!name) return;
+    
+    // Update local state
     setSheetsMap((prev) => {
       const next = {
         ...prev,
@@ -324,12 +628,31 @@ export default function App() {
       localStorage.setItem(STORAGE_SHEETS, JSON.stringify(next));
       return next;
     });
+
+    // Update database if in live mode
+    if (isLiveMode && liveId) {
+      try {
+        const success = await syncService.renameSheet(liveId, name);
+        if (success) {
+          showNotification('success', '✅ Đã cập nhật tên sheet trong database', 2000);
+        } else {
+          showNotification('error', '❌ Lỗi cập nhật database (chỉ cập nhật local)', 3000);
+        }
+      } catch (error) {
+        console.error('Rename sheet error:', error);
+        showNotification('error', '❌ Lỗi cập nhật database (chỉ cập nhật local)', 3000);
+      }
+    }
   };
 
-  const deleteSheet = () => {
+  const deleteSheet = async () => {
     if (!activeSheetId) return;
     const current = sheetsMap[activeSheetId];
     if (!window.confirm(`Xoá sheet "${current?.name}"?`)) return;
+    
+    // Store the current live ID before deletion
+    const currentLiveId = isLiveMode ? liveId : null;
+    
     setSheetsMap((prev) => {
       const ids = Object.keys(prev).filter((k) => k !== activeSheetId);
       let nextMap = { ...prev };
@@ -370,6 +693,32 @@ export default function App() {
       localStorage.setItem(STORAGE_SHEETS, JSON.stringify(nextMap));
       return nextMap;
     });
+
+    // Delete from database if it was a live sheet
+    if (currentLiveId) {
+      try {
+        const success = await syncService.deleteSheet(currentLiveId);
+        if (success) {
+          showNotification('success', '✅ Đã xóa sheet khỏi database', 2000);
+        } else {
+          showNotification('error', '❌ Lỗi xóa database (đã xóa local)', 3000);
+        }
+        
+        // Clean up live mode state
+        setIsLiveMode(false);
+        setLiveId(null);
+        setSyncStatus('idle');
+        
+        // Clean up subscription
+        if (unsubscribeRef.current) {
+          unsubscribeRef.current();
+          unsubscribeRef.current = null;
+        }
+      } catch (error) {
+        console.error('Delete sheet error:', error);
+        showNotification('error', '❌ Lỗi xóa database (đã xóa local)', 3000);
+      }
+    }
   };
 
   /* ---------- Business logic ---------- */
@@ -529,15 +878,82 @@ export default function App() {
     if (t) setSelectedQR(t.id);
   };
 
-  // Random người nhận (dùng ở nút Random)
-  const chooseRandomPayer = () => {
-    if (!members.length) return;
-    const pool = members; // hoặc members.filter(m => !m.paid)
-    const pick = pool[Math.floor(Math.random() * pool.length)];
-    if (!pick) return;
-    setPayerMemberId(pick.id);
-    if (pick.name) autoMatchQR(pick.name);
-    setRightTab("transfer");
+  /* ---------- Manual Save Function ---------- */
+  const saveToLive = async () => {
+    if (!hasUnsavedChanges) return;
+    
+    // Allow saving from live_view mode (shared sheet recipients can now edit)
+    if (!isLiveMode || !liveId) return;
+    
+    setIsSaving(true);
+    setSyncStatus('syncing');
+    
+    try {
+      // For live_view mode, use the sheet name from current data or a default
+      const sheetName = activeSheetId === "live_view" 
+        ? (sheetsMap[activeSheetId]?.name || "Live Sheet")
+        : (sheetsMap[activeSheetId]?.name || "Live Sheet");
+      
+      const updateTime = Date.now();
+      
+      const liveData = {
+        name: sheetName,
+        billData,
+        members,
+        selectedQR,
+        payerMemberId,
+        showUnpaidOnly,
+        rightTab,
+        liveId,
+        lastUpdate: updateTime,
+      };
+
+      // Use optimized update method instead of publish
+      const success = await syncService.updateSheet(liveId, liveData);
+      
+      if (success) {
+        setLastUpdateTime(updateTime);
+        setJustSaved(true); // Prevent immediate unsaved marking
+        setHasUnsavedChanges(false); // This will hide the save button
+        setSyncStatus('idle');
+        showNotification('success', '✅ Đã lưu thay đổi', 2000);
+        
+        // Reset justSaved flag after a short delay
+        setTimeout(() => {
+          setJustSaved(false);
+        }, 1000);
+      } else {
+        throw new Error('Update failed');
+      }
+    } catch (error) {
+      console.error('Save failed:', error);
+      setSyncStatus('error');
+      showNotification('error', '❌ Lỗi lưu dữ liệu', 3000);
+      // Fallback to localStorage
+      const liveData = {
+        name: activeSheetId === "live_view" 
+          ? (sheetsMap[activeSheetId]?.name || "Live Sheet")
+          : (sheetsMap[activeSheetId]?.name || "Live Sheet"),
+        billData,
+        members,
+        selectedQR,
+        payerMemberId,
+        showUnpaidOnly,
+        rightTab,
+        liveId,
+        lastUpdate: Date.now(),
+      };
+      localStorage.setItem(`live_${liveId}`, JSON.stringify(liveData));
+      setJustSaved(true); // Prevent immediate unsaved marking
+      setHasUnsavedChanges(false); // This will hide the save button
+      
+      // Reset justSaved flag after a short delay
+      setTimeout(() => {
+        setJustSaved(false);
+      }, 1000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const copySummary = async () => {
@@ -565,9 +981,9 @@ export default function App() {
     lines.push(`Còn thiếu: ${totalUnpaid.toLocaleString()} VNĐ`);
     try {
       await navigator.clipboard.writeText(lines.join("\n"));
-      alert("Đã sao chép nội dung chia sẻ ✅");
+      showNotification('success', '📋 Đã sao chép nội dung', 2000);
     } catch {
-      alert("Không thể sao chép. Hãy thử trên HTTPS hoặc trình duyệt khác.");
+      showNotification('error', '❌ Không thể sao chép. Hãy thử trên HTTPS', 3000);
     }
   };
 
@@ -607,129 +1023,124 @@ export default function App() {
     return q.src; // dataURL khi là custom
   };
 
-  /* ---------- Cloud sync: start/stop & link ---------- */
-  const makeSheetData = () => ({
-    billData,
-    members,
-    selectedQR,
-    payerMemberId,
-    showUnpaidOnly,
-    rightTab,
-  });
-
-  const startCloudSync = async () => {
+  /* ---------- Sharing functions ---------- */
+  const shareSheet = async () => {
     try {
       const sheet = sheetsMap[activeSheetId];
-      if (!sheet) return alert("Chưa chọn sheet.");
-      if (!uid) return alert("Đang đăng nhập ẩn danh… thử lại sau vài giây.");
-
-      let cloudId = sheet.cloudId;
-
-      // 1) Nếu chưa có doc -> tạo
-      if (!cloudId) {
-        const docRef = await addDoc(collection(db, "sheets"), {
-          owner: uid,
-          name: sheet.name,
-          data: makeSheetData(),
-          updatedAt: serverTimestamp(),
-        });
-        cloudId = docRef.id;
-        // lưu vào sheet
-        setSheetsMap((prev) => {
-          const next = { ...prev };
-          next[activeSheetId] = { ...next[activeSheetId], cloudId };
-          localStorage.setItem(STORAGE_SHEETS, JSON.stringify(next));
-          return next;
-        });
-      }
-
-      // 2) Subscribe realtime
-      if (cloudUnsub) cloudUnsub();
-      const unsub = onSnapshot(doc(db, "sheets", cloudId), (snap) => {
-        if (!snap.exists()) return;
-        const d = snap.data();
-        setCanWrite(d.owner === uid);
-
-        const incoming = JSON.stringify(d.data || {});
-        if (incoming === lastPushedRef.current) return; // bỏ echo của chính mình
-
-        const s = d.data || {};
-        setBillData(s.billData || {});
-        setMembers(
-          (s.members || []).map((m) => ({
-            ...m,
-            finalPrice: Number(m.finalPrice) || 0,
-          }))
-        );
-        setSelectedQR(s.selectedQR);
-        setPayerMemberId(s.payerMemberId ?? null);
-        setShowUnpaidOnly(!!s.showUnpaidOnly);
-        setRightTab(s.rightTab || "overview");
-      });
-      setCloudUnsub(() => unsub);
-      alert("Đã bật đồng bộ realtime cho sheet này.");
-    } catch (err) {
-      console.error("startCloudSync failed:", err);
-      alert("Không thể bật đồng bộ: " + (err?.message || err));
+    if (!sheet) {
+      showNotification('error', '⚠️ Chưa chọn sheet', 2000);
+      return;
     }
-  };
 
-  const stopCloudSync = () => {
-    if (cloudUnsub) {
-      cloudUnsub();
-      setCloudUnsub(null);
-      alert("Đã tắt đồng bộ realtime.");
-    }
-  };
+      // Generate a unique live ID for this sheet
+      const newLiveId = "live_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
+      
+      const shareData = {
+        name: sheet.name,
+        billData,
+        members,
+        selectedQR,
+        payerMemberId,
+        showUnpaidOnly,
+        rightTab,
+        liveId: newLiveId,
+        lastUpdate: Date.now(),
+      };
 
-  const copyLiveLink = async () => {
-    const id = sheetsMap[activeSheetId]?.cloudId;
-    if (!id) return alert("Sheet này chưa bật đồng bộ.");
-    const url = `${window.location.origin}${window.location.pathname}?cloud=${id}`;
-    await navigator.clipboard.writeText(url);
-    alert("Đã copy link live ✅");
-  };
-
-  // Push local -> cloud (chỉ khi là owner và không ở cloudView)
-  useEffect(() => {
-    const sheet = sheetsMap[activeSheetId];
-    const cloudId = sheet?.cloudId;
-    if (!cloudId || !canWrite || activeSheetId === "cloudView") return;
-
-    const data = makeSheetData();
-    const payloadStr = JSON.stringify(data);
-
-    const t = setTimeout(async () => {
+      // Use optimized update method for initial creation
+      setSyncStatus('syncing');
       try {
-        lastPushedRef.current = payloadStr;
-        const payload = {
-          data,
-          updatedAt: serverTimestamp(),
-        };
-        // Chỉ cập nhật tên khi không ở chế độ cloudView
-        payload.name = sheet.name;
-        await updateDoc(doc(db, "sheets", cloudId), payload);
-      } catch (e) {
-        console.error(e);
+        const success = await syncService.updateSheet(newLiveId, shareData);
+        if (success) {
+          setSyncStatus('idle');
+          showNotification('success', '✅ Đã tạo sheet trong database', 2000);
+        } else {
+          throw new Error('Database creation failed');
+        }
+      } catch (error) {
+        console.error('Database creation failed:', error);
+        setSyncStatus('error');
+        // Fallback to localStorage
+        localStorage.setItem(`live_${newLiveId}`, JSON.stringify(shareData));
+        showNotification('warning', '⚠️ Dùng localStorage (demo mode)', 2000);
       }
-    }, 350); // debounce
+      
+      const url = `${window.location.origin}${window.location.pathname}?live=${newLiveId}`;
+      
+      await navigator.clipboard.writeText(url);
+      showNotification('success', '🔗 Đã copy link chia sẻ!', 3000);
+      
+      // Enable live mode for current user
+      setLiveId(newLiveId);
+      setIsLiveMode(true);
+    } catch (err) {
+      console.error("Share failed:", err);
+      setSyncStatus('error');
+      showNotification('error', '❌ Không thể chia sẻ: ' + (err?.message || err), 4000);
+    }
+  };
 
-    return () => clearTimeout(t);
-  }, [
-    billData,
-    members,
-    selectedQR,
-    payerMemberId,
-    showUnpaidOnly,
-    rightTab,
-    activeSheetId,
-    canWrite,
-    sheetsMap,
-  ]);
+  const stopLiveSharing = async () => {
+    if (liveId) {
+      // Clean up subscription
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
+      }
+      
+      // Remove from database
+      try {
+        const success = await syncService.deleteSheet(liveId);
+        if (success) {
+          showNotification('success', '✅ Đã tắt chia sẻ và xóa khỏi database', 2000);
+        } else {
+          showNotification('warning', '⚠️ Đã tắt chia sẻ (lỗi xóa database)', 2000);
+        }
+      } catch (error) {
+        console.error('Error cleaning up database:', error);
+        showNotification('warning', '⚠️ Đã tắt chia sẻ (lỗi xóa database)', 2000);
+      }
+      
+      // Remove live data from localStorage
+      localStorage.removeItem(`live_${liveId}`);
+      localStorage.removeItem(`sync_${liveId}`);
+      
+      setIsLiveMode(false);
+      setLiveId(null);
+      setSyncStatus('idle');
+    }
+  };
 
   /* ================= UI ================= */
   return (
     <div className="app">
+      {/* Data Loading Overlay */}
+      {isDataLoading && (
+        <div className="data-loading-overlay">
+          <div className="data-loading-content">
+            <div className="loading-spinner"></div>
+            <div>Đang tải dữ liệu chia sẻ...</div>
+          </div>
+        </div>
+      )}
+
+      {/* Notification System */}
+      {notification && (
+        <div className={`notification notification-${notification.type}`}>
+          <div className="notification-content">
+            <span>{notification.message}</span>
+            {notification.type !== 'loading' && (
+              <button onClick={hideNotification} className="notification-close">×</button>
+            )}
+          </div>
+          {notification.type === 'loading' && (
+            <div className="loading-bar">
+              <div className="loading-progress"></div>
+            </div>
+          )}
+        </div>
+      )}
+
       <header className="topbar">
         <div className="brand">
           <Receipt className="brand-icon" />
@@ -762,22 +1173,40 @@ export default function App() {
 
         <div className="top-actions">
           <button className="ghost" onClick={copySummary}>
-            <Copy size={16} /> Copy chia sẻ
+            <Copy size={16} /> Copy tóm tắt
           </button>
-          <button className="ghost" onClick={startCloudSync}>
-            Bật đồng bộ
+          <button className="ghost" onClick={shareSheet} disabled={syncStatus === 'syncing'}>
+            <Share2 size={16} /> 
+            {syncStatus === 'syncing' ? 'Đang sync...' : 'Chia sẻ live'}
+            {!isOnline && <WifiOff size={14} style={{ marginLeft: '4px', color: '#ef4444' }} />}
           </button>
-          <button className="ghost" onClick={copyLiveLink}>
-            Link live
-          </button>
-          <button className="danger" onClick={stopCloudSync}>
-            Tắt đồng bộ
-          </button>
+          
+          {/* Save Button - Only show when there are unsaved changes */}
+          {hasUnsavedChanges && isLiveMode && (
+            <button 
+              className="primary"
+              onClick={saveToLive} 
+              disabled={isSaving}
+              style={{ 
+                backgroundColor: '#22c55e',
+                color: 'white',
+                fontWeight: 'bold'
+              }}
+            >
+              {isSaving ? '💾 Đang lưu...' : '💾 Lưu thay đổi'}
+            </button>
+          )}
+          
+          {isLiveMode && activeSheetId !== "live_view" && (
+            <button className="danger" onClick={stopLiveSharing}>
+              Tắt live
+            </button>
+          )}
         </div>
       </header>
 
       <main className="shell">
-        <div className="main-grid">
+        <div className="main-grid responsive-grid">
           {/* LEFT */}
           <section className="stack">
             {/* Bill */}
@@ -786,7 +1215,16 @@ export default function App() {
                 <Calculator className="card-icon" />
                 <h2>
                   Thông tin đơn hàng — {sheetsMap[activeSheetId]?.name || ""}
-                  {activeSheetId === "cloudView" ? " (live)" : ""}
+                  {activeSheetId.startsWith("shared_") ? " (chia sẻ)" : ""}
+                  {activeSheetId === "live_view" ? " (live 🔴 - có thể chỉnh sửa)" : ""}
+                  {isLiveMode && activeSheetId !== "live_view" ? " (đang chia sẻ live ⚡)" : ""}
+                  {isLiveMode && (
+                    <span style={{ marginLeft: '8px', fontSize: '12px' }}>
+                      {isOnline ? <Wifi size={14} style={{ color: '#22c55e' }} /> : <WifiOff size={14} style={{ color: '#ef4444' }} />}
+                      {syncStatus === 'syncing' && " ⏳"}
+                      {syncStatus === 'error' && " ❌"}
+                    </span>
+                  )}
                 </h2>
               </div>
               <div className="form-grid">
@@ -889,18 +1327,18 @@ export default function App() {
                           title={m.paid ? "Đã trả" : "Chưa trả"}
                         >
                           {m.paid ? (
-                            <CheckCircle size={16} />
+                            <CheckCircle size={14} />
                           ) : (
-                            <CreditCard size={16} />
+                            <CreditCard size={14} />
                           )}
                         </button>
                         <button
-                          className="circle danger"
+                          className="btn-remove"
                           onClick={() => removeMember(m.id)}
                           disabled={members.length === 1}
-                          title="Xóa"
+                          title="Xóa thành viên"
                         >
-                          <Trash2 size={16} />
+                          <Minus size={14} />
                         </button>
                       </div>
                     </div>
@@ -1033,25 +1471,6 @@ export default function App() {
                 <div className="panel panel-transfer">
                   <div className="grid-2">
                     <div className="form-group">
-                      <label>Người nhận hôm nay</label>
-                      <select
-                        value={payerMemberId ?? ""}
-                        onChange={(e) =>
-                          setPayerMemberId(
-                            e.target.value ? Number(e.target.value) : null
-                          )
-                        }
-                      >
-                        <option value="">— Chọn người nhận —</option>
-                        {members.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name || `#${m.id}`}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div className="form-group">
                       <label>QR hiển thị</label>
                       <div className="hstack">
                         <select
@@ -1066,50 +1485,50 @@ export default function App() {
                             </option>
                           ))}
                         </select>
-                        <button className="ghost" onClick={chooseRandomPayer}>
-                          <Shuffle size={16} /> Random
-                        </button>
                         <button
                           className="primary"
-                          onClick={() => setRightTab("transfer")}
+                          onClick={() => setShowQR(!showQR)}
                         >
-                          <ListChecks size={16} /> Hiện QR
+                          {showQR ? <EyeOff size={14} /> : <Eye size={14} />}
+                          {showQR ? 'Ẩn QR' : 'Hiện QR'}
                         </button>
                       </div>
                     </div>
                   </div>
 
                   {/* Khung QR */}
-                  <div className="qr-frame">
-                    {(() => {
-                      const src = getQRSrcById(selectedQR);
-                      if (!src) {
+                  {showQR && (
+                    <div className="qr-frame">
+                      {(() => {
+                        const src = getQRSrcById(selectedQR);
+                        if (!src) {
+                          return (
+                            <div className="qr-fallback">
+                              <CreditCard size={40} />
+                              <p>Chưa chọn QR</p>
+                            </div>
+                          );
+                        }
                         return (
-                          <div className="qr-fallback">
-                            <CreditCard size={40} />
-                            <p>Chưa chọn QR</p>
-                          </div>
+                          <>
+                            <img
+                              src={src}
+                              alt="QR chuyển khoản"
+                              onError={(e) => {
+                                e.currentTarget.style.display = "none";
+                                e.currentTarget.nextElementSibling.style.display =
+                                  "flex";
+                              }}
+                            />
+                            <div className="qr-fallback" style={{ display: "none" }}>
+                              <CreditCard size={40} />
+                              <p>Không tìm thấy ảnh QR.</p>
+                            </div>
+                          </>
                         );
-                      }
-                      return (
-                        <>
-                          <img
-                            src={src}
-                            alt="QR chuyển khoản"
-                            onError={(e) => {
-                              e.currentTarget.style.display = "none";
-                              e.currentTarget.nextElementSibling.style.display =
-                                "flex";
-                            }}
-                          />
-                          <div className="qr-fallback" style={{ display: "none" }}>
-                            <CreditCard size={40} />
-                            <p>Không tìm thấy ảnh QR.</p>
-                          </div>
-                        </>
-                      );
-                    })()}
-                  </div>
+                      })()}
+                    </div>
+                  )}
 
                   {/* Upload QR */}
                   <div className="qr-upload">
@@ -1148,11 +1567,11 @@ export default function App() {
                             <img src={q.src} alt={q.name} />
                             <span title={q.name}>{q.name}</span>
                             <button
-                              className="circle danger"
+                              className="btn-remove-small"
                               onClick={() => removeCustomQR(q.id)}
                               title="Xóa QR"
                             >
-                              <Trash2 size={14} />
+                              <X size={10} />
                             </button>
                           </div>
                         ))}
