@@ -80,6 +80,17 @@ button{ cursor:pointer; border:none; }
   border-color:rgba(239,68,68,.5);
   color:#fca5a5;
 }
+
+/* QR Toggle Button - normal size */
+.qr-toggle-btn {
+  height: 36px !important;
+  padding: 0 12px !important;
+  font-size: 13px !important;
+  font-weight: 500;
+  gap: 6px;
+  min-width: 100px;
+}
+
 button:disabled{ opacity:.5; cursor:not-allowed; }
 
 /* Select with custom chevron */
@@ -96,7 +107,7 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 .app{ height:100%; display:flex; flex-direction:column; }
 .shell{ flex:1; min-height:0; padding:10px; }
 .main-grid{
-  height:100%; display:grid; grid-template-columns: 1.4fr 1fr; gap:10px;
+  height:100%; display:grid; grid-template-columns: 3fr 0.8fr; gap:10px;
   transition: all 0.3s ease;
 }
 
@@ -176,7 +187,7 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 }
 .member-header{ display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
 .badge{ background:linear-gradient(135deg, #6d5efc, #8c5bff); color:#fff; font-weight:700; border-radius:999px; padding:1px 6px; font-size:10px; }
-.member-actions{ display:flex; gap:4px; }
+.member-actions{ display:flex; gap:4px; align-items:center; }
 /* New remove button styles */
 .btn-remove {
   width: 28px;
@@ -260,7 +271,19 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 
 /* Tabs & panels (right column) */
 .tabs{ display:flex; gap:6px; border-bottom:1px dashed var(--border); padding-bottom:6px; margin-bottom:6px; }
-.tab{ height:var(--control-h); padding:0 10px; border-radius:8px; background:#0b1324; border:1px solid var(--border); color:#e5e7eb; font-size:12px; }
+.tab{ 
+  height:var(--control-h); 
+  padding:0 10px; 
+  border-radius:8px; 
+  background:#0b1324; 
+  border:1px solid var(--border); 
+  color:#e5e7eb; 
+  font-size:12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
 .tab.active{ background:linear-gradient(135deg, #111827, #0b1324); border-color:#334155; }
 
 .panel{ display:flex; flex-direction:column; gap:8px; }
@@ -306,10 +329,34 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 .note{ color:#cbd5e1; }
 
 /* Responsive */
+@media (max-width: 1400px) {
+  .main-grid {
+    grid-template-columns: 2.5fr 0.8fr;
+    gap: 10px;
+  }
+}
+
 @media (max-width: 1200px) {
   .main-grid {
-    grid-template-columns: 1fr 0.8fr;
+    grid-template-columns: 2fr 0.8fr;
     gap: 10px;
+  }
+}
+
+@media (max-width: 1000px) {
+  .main-grid {
+    grid-template-columns: 1.5fr 1fr;
+    gap: 8px;
+  }
+  
+  .form-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  
+  .qr-frame img {
+    max-width: 200px;
+    max-height: 200px;
   }
 }
 
@@ -463,6 +510,9 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
     padding: 0 8px;
     font-size: 12px;
     min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
   }
   
   .panel {
@@ -529,6 +579,50 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
   }
 }
 
+@media (max-width: 600px) {
+  .main-grid {
+    gap: 6px;
+  }
+  
+  .card {
+    padding: 10px;
+    margin-bottom: 6px;
+  }
+  
+  .form-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  
+  .member-grid {
+    gap: 6px;
+  }
+  
+  .ghost, .primary, .danger {
+    height: 34px;
+    padding: 0 8px;
+    font-size: 12px;
+    min-height: 44px;
+  }
+  
+  .qr-toggle-btn {
+    height: 34px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
+    min-width: 85px;
+    gap: 5px;
+  }
+  
+  .topbar {
+    padding: 8px 10px;
+  }
+  
+  .qr-frame img {
+    max-width: 200px;
+    max-height: 200px;
+  }
+}
+
 @media (max-width: 480px) {
   .brand-icon {
     width: 16px;
@@ -557,8 +651,21 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
     font-size: 11px;
   }
   
+  .qr-toggle-btn {
+    height: 32px !important;
+    padding: 0 8px !important;
+    font-size: 11px !important;
+    min-width: 80px;
+    gap: 4px;
+  }
+  
   .sheetbar {
     gap: 4px;
+  }
+  
+  .tab {
+    gap: 4px;
+    font-size: 11px;
   }
   
   .top-actions {
@@ -570,6 +677,23 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
     max-height: 180px;
   }
   
+  .member {
+    min-height: 140px;
+  }
+  
+  .member-header {
+    margin-bottom: 6px;
+  }
+  
+  .badge {
+    font-size: 10px;
+    padding: 2px 6px;
+  }
+  
+  .member-actions {
+    gap: 4px;
+  }
+  
   .circle {
     width: 24px;
     height: 24px;
@@ -578,10 +702,25 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
   .form-group input,
   .form-group select,
   .sheet-select {
-    height: 32px;
-    padding: 0 8px;
-    font-size: 12px;
+    height: 36px;
+    padding: 0 10px;
+    font-size: 13px;
     min-height: 44px;
+  }
+  
+  .form-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  
+  .member-form {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  
+  .member-form input {
+    font-size: 13px;
+    height: 36px;
   }
   
   .price-pill {
@@ -652,9 +791,26 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
   }
   
   .ghost, .primary, .danger {
-    height: 28px;
-    padding: 0 4px;
-    font-size: 10px;
+    height: 36px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+  
+  .qr-toggle-btn {
+    height: 40px !important;
+    padding: 0 12px !important;
+    font-size: 12px !important;
+    min-width: 100px;
+  }
+  
+  .circle {
+    width: 32px;
+    height: 32px;
+  }
+  
+  .btn-remove {
+    width: 32px;
+    height: 32px;
   }
   
   .sheetbar button span {
@@ -666,8 +822,13 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
   }
   
   .circle {
-    width: 22px;
-    height: 22px;
+    width: 28px;
+    height: 28px;
+  }
+  
+  .btn-remove {
+    width: 28px;
+    height: 28px;
   }
 }
 

@@ -117,13 +117,17 @@ export default function App() {
   }, []);
   const listRef = useRef(null);
   const [cols, setCols] = useState(3);
-  const [rows, setRows] = useState(2);
+  const [rows, setRows] = useState(2); // Default to 2 rows minimum
   const [page, setPage] = useState(1);
 
-  // Layout constants (đồng bộ với CSS)
-  const MIN_CARD_W = 240; // px (reduced from 260)
-  const CARD_H = 180; // px (reduced from 200)
-  const GAP = 10; // px (reduced from 12)
+  // Layout constants (đồng bộ với CSS) - Responsive optimized
+  const MIN_CARD_W = window.innerWidth < 480 ? 160 : 
+                     window.innerWidth < 768 ? 180 : 
+                     window.innerWidth < 1200 ? 200 : 240; // Responsive card width
+  const CARD_H = window.innerWidth < 480 ? 130 : 
+                 window.innerWidth < 768 ? 150 : 170; // Reduced height for better 2-row fit
+  const GAP = window.innerWidth < 480 ? 6 : 
+              window.innerWidth < 768 ? 8 : 10; // Responsive gap
 
   /* ---------- Initial load ---------- */
   useEffect(() => {
@@ -785,7 +789,7 @@ export default function App() {
       const w = el.clientWidth;
       const h = el.clientHeight;
       const newCols = Math.max(1, Math.floor((w + GAP) / (MIN_CARD_W + GAP)));
-      const newRows = Math.max(1, Math.floor((h + GAP) / (CARD_H + GAP)));
+      const newRows = Math.max(2, Math.floor((h + GAP) / (CARD_H + GAP))); // Minimum 2 rows
       setCols(newCols);
       setRows(newRows);
     };
@@ -1413,13 +1417,13 @@ export default function App() {
                   className={`tab ${rightTab === "overview" ? "active" : ""}`}
                   onClick={() => setRightTab("overview")}
                 >
-                  <Gauge size={16} /> Tổng quan
+                  <Gauge size={14} /> Tổng quan
                 </button>
                 <button
                   className={`tab ${rightTab === "transfer" ? "active" : ""}`}
                   onClick={() => setRightTab("transfer")}
                 >
-                  <CreditCard size={16} /> Chuyển khoản
+                  <CreditCard size={14} /> Chuyển khoản
                 </button>
               </div>
 
@@ -1486,7 +1490,7 @@ export default function App() {
                           ))}
                         </select>
                         <button
-                          className="primary"
+                          className="primary qr-toggle-btn"
                           onClick={() => setShowQR(!showQR)}
                         >
                           {showQR ? <EyeOff size={14} /> : <Eye size={14} />}
