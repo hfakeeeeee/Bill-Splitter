@@ -14,6 +14,8 @@ import {
   Upload,
   Edit2,
   Share2,
+  Sun,
+  Moon,
   Wifi,
   WifiOff,
   X,
@@ -115,6 +117,46 @@ export default function App() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+  
+  // Theme management
+  const [theme, setTheme] = useState(() => {
+    // Check localStorage first, then system preference
+    const savedTheme = localStorage.getItem('bill-splitter-theme');
+    if (savedTheme) return savedTheme;
+    
+    // System preference detection
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+      return 'light';
+    }
+    return 'dark';
+  });
+
+  // Apply theme to document
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('bill-splitter-theme', theme);
+  }, [theme]);
+
+  // Listen for system theme changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: light)');
+    const handleChange = (e) => {
+      // Only auto-switch if user hasn't manually set a preference
+      if (!localStorage.getItem('bill-splitter-theme-manual')) {
+        setTheme(e.matches ? 'light' : 'dark');
+      }
+    };
+    
+    mediaQuery.addListener(handleChange);
+    return () => mediaQuery.removeListener(handleChange);
+  }, []);
+
+  const toggleTheme = () => {
+    const newTheme = theme === 'dark' ? 'light' : 'dark';
+    setTheme(newTheme);
+    localStorage.setItem('bill-splitter-theme-manual', 'true');
+  };
+
   const listRef = useRef(null);
   const [cols, setCols] = useState(3);
   const [rows, setRows] = useState(2); // Default to 2 rows minimum
@@ -1176,6 +1218,13 @@ export default function App() {
         </div>
 
         <div className="top-actions">
+          <button 
+            className="theme-toggle" 
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          >
+            {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+          </button>
           <button className="ghost" onClick={copySummary}>
             <Copy size={16} /> Copy tóm tắt
           </button>
