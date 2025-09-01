@@ -17,9 +17,10 @@
 }
 
 *{ box-sizing: border-box; }
-html, body, #root { height:100%; }
+html, body, #root { height:100%; margin:0; padding:0; }
 body{
   margin:0;
+  padding:0;
   background: radial-gradient(60rem 60rem at 10% -10%, #1e1b4b 0%, #0b1220 40%),
               radial-gradient(60rem 60rem at 110% -10%, #1f2937 0%, #0b1220 35%),
               var(--bg);
@@ -104,8 +105,8 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 }
 
 /* Layout */
-.app{ height:100%; display:flex; flex-direction:column; }
-.shell{ flex:1; min-height:0; padding:10px; }
+.app{ height:100vh; display:flex; flex-direction:column; margin:0; }
+.shell{ flex:1; min-height:0; padding:10px 10px 0 10px; }
 .main-grid{
   height:100%; display:grid; grid-template-columns: 3fr 0.8fr; gap:10px;
   transition: all 0.3s ease;
@@ -990,4 +991,95 @@ button:disabled{ opacity:.5; cursor:not-allowed; }
 @keyframes spin {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+
+/* Footer */
+.footer {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 10px 120px;
+  margin-top: auto;
+  margin-bottom: 0;
+  position: relative;
+  bottom: 0;
+}
+
+.footer-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.footer-info {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.footer-info strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.footer-links {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.footer-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: rgba(109, 94, 252, 0.1);
+  color: var(--primary);
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+
+.footer-link:hover {
+  background: var(--primary);
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(109, 94, 252, 0.3);
+}
+
+.footer-link svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Footer responsive */
+@media (max-width: 600px) {
+  .footer {
+    padding: 3px 16px;
+  }
+  
+  .footer-content {
+    flex-direction: column;
+    gap: 2px;
+    text-align: center;
+  }
+  
+  .footer-info {
+    font-size: 8px;
+  }
+  
+  .footer-links {
+    gap: 3px;
+  }
+  
+  .footer-link {
+    width: 16px;
+    height: 16px;
+  }
+  
+  .footer-link svg {
+    width: 8px;
+    height: 8px;
+  }
 }
