@@ -123,6 +123,7 @@ npm run deploy
 ```bash
 REACT_APP_SUPABASE_URL=your_supabase_url
 REACT_APP_SUPABASE_ANON_KEY=your_supabase_anon_key
+REACT_APP_ENV=production
 ```
 3. Khởi động lại server
 
@@ -229,9 +230,9 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 **Made by HFake**
 
-- 📧 Email: [Contact](mailto:hfake@example.com)
+- 📧 Email: [Contact](mailto:huynguyenquoc.work@gmail.com)
 - 🌐 GitHub: [@hfakeeeeee](https://github.com/hfakeeeeee)
-- 📱 Facebook: [HFake](https://facebook.com/hfake)
+- 📱 Facebook: [HFake](https://www.facebook.com/HFakeee/)
 
 ## 🙏 Acknowledgments
 
